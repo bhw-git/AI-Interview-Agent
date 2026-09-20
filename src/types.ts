@@ -163,8 +163,14 @@ export interface NasikoTrace {
   durationMs: number;
   status: 'success' | 'failed';
   errorMessage?: string;
+  error?: string;
   input: unknown;
   output: unknown;
+  // Backend contract aliases (NasikoTraceSpan): drawer accepts both shapes.
+  startedAt?: string;
+  completedAt?: string;
+  inputSummary?: unknown;
+  outputSummary?: unknown;
   tokens?: {
     promptTokens: number;
     completionTokens: number;

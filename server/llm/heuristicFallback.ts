@@ -4,12 +4,208 @@
  * suffers temporary 503 high demand spikes or network timeouts.
  */
 
+function extractResumeInfo(text: string): {
+  name: string;
+  email: string;
+  phone: string;
+  location: string;
+  skills: string[];
+  education: string[];
+  experience: string[];
+  projects: string[];
+} {
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  let name = 'Candidate';
+  let email = '';
+  let phone = '';
+  let location = '';
+  const skills: string[] = [];
+  const education: string[] = [];
+  const experience: string[] = [];
+  const projects: string[] = [];
+
+  const techKeywords = [
+    'java', 'python', 'javascript', 'typescript', 'react', 'node', 'spring', 'sql', 'aws', 'docker', 'kubernetes', 'git',
+    'html', 'css', 'mysql', 'postgres', 'mongodb', 'redis', 'graphql', 'rest', 'api', 'go', 'rust', 'c++', 'c#',
+    'angular', 'vue', 'tailwind', 'express', 'django', 'fastapi', 'flask', 'hibernate', 'junit', 'mockito', 'jest', 'cypress',
+    'gcp', 'azure', 'jenkins', 'ci/cd', 'terraform', 'ansible', 'prometheus', 'grafana', 'kafka', 'rabbitmq'
+  ];
+
+  for (const line of lines) {
+    const lower = line.toLowerCase();
+    
+    if (!email && line.includes('@')) {
+      const match = line.match(/[\w.-]+@[\w.-]+\.\w+/);
+      if (match) email = match[0];
+    }
+    
+    if (!phone && /[\d\s\-\(\)\+]{10,}/.test(line) && (lower.includes('phone') || lower.includes('tel') || lower.includes('mobile') || /^[\d\+\-\(\)\s]{10,}$/.test(line))) {
+      const match = line.match(/[\d\s\-\(\)\+]{10,}/);
+      if (match) phone = match[0].trim();
+    }
+    
+    if (!location && (lower.includes('location') || lower.includes('address') || /^[A-Z][a-z]+,\s*[A-Z]{2}/.test(line) || /^[A-Z][a-z]+,\s*[A-Z][a-z]+/.test(line))) {
+      const parts = line.split(/[:|]/);
+      location = parts[parts.length - 1]?.trim() || '';
+    }
+
+    if (name === 'Candidate' && line.length > 2 && line.length < 60 && !line.includes('@') && !line.includes('---') && !lower.includes('resume') && !lower.includes('curriculum') && !lower.includes('profile') && !lower.includes('summary')) {
+      const words = line.split(/\s+/);
+      if (words.length >= 2 && words.length <= 5 && words.every(w => /^[A-Z][a-z]+/.test(w) || /^[A-Z]{2,}$/.test(w))) {
+        name = line;
+      }
+    }
+
+    if (lower.includes('education') || lower.includes('degree') || lower.includes('university') || lower.includes('college') || lower.includes('bachelor') || lower.includes('master') || lower.includes('phd') || lower.includes('b.s.') || lower.includes('m.s.')) {
+      if (line.length > 10 && line.length < 200) education.push(line);
+    }
+    
+    if (lower.includes('experience') || lower.includes('work') || lower.includes('employment') || lower.includes('intern') || lower.includes('software engineer') || lower.includes('developer') || lower.includes('analyst')) {
+      if (line.length > 10 && line.length < 200) experience.push(line);
+    }
+
+    if (lower.includes('project') && line.length > 10 && line.length < 200) {
+      projects.push(line);
+    }
+  }
+
+  const lowerText = text.toLowerCase();
+  for (const kw of techKeywords) {
+    if (lowerText.includes(kw)) {
+      const formatted = kw.charAt(0).toUpperCase() + kw.slice(1);
+      if (!skills.includes(formatted)) skills.push(formatted);
+    }
+  }
+
+  return { name, email, phone, location, skills, education, experience, projects };
+}
+
+function categorizeSkills(skills: string[]): CandidateProfile['skills'] {
+  const result = {
+    languages: [] as string[],
+    backend: [] as string[],
+    frontend: [] as string[],
+    databases: [] as string[],
+    cloud: [] as string[],
+    devops: [] as string[],
+    frameworks: [] as string[],
+    testing: [] as string[],
+    other: [] as string[],
+  };
+
+  const langSet = new Set(['Java', 'Python', 'Javascript', 'Typescript', 'Go', 'Rust', 'C++', 'C#', 'Php', 'Ruby', 'Swift', 'Kotlin', 'Scala']);
+  const backendSet = new Set(['Node', 'Spring', 'Express', 'Django', 'Fastapi', 'Flask', 'Dotnet', 'Rails', 'Laravel', 'Gin', 'Echo']);
+  const frontendSet = new Set(['React', 'Angular', 'Vue', 'Html', 'Css', 'Tailwind', 'Svelte', 'Nextjs', 'Nuxt', 'Redux', 'Vuex']);
+  const dbSet = new Set(['Mysql', 'Postgres', 'Mongodb', 'Redis', 'Sql', 'Sqlite', 'Dynamodb', 'Cassandra', 'Elasticsearch']);
+  const cloudSet = new Set(['Aws', 'Gcp', 'Azure', 'Cloudflare', 'Vercel', 'Netlify', 'Heroku', 'Digitalocean']);
+  const devopsSet = new Set(['Docker', 'Kubernetes', 'Git', 'Jenkins', 'Ci/Cd', 'Terraform', 'Ansible', 'Prometheus', 'Grafana', 'Helm']);
+  const frameworkSet = new Set(['Spring', 'Hibernate', 'Nextjs', 'Redux', 'Vuex', 'Rxjs', 'Graphql', 'Rest', 'Grpc', 'Microservices']);
+  const testingSet = new Set(['Junit', 'Mockito', 'Jest', 'Cypress', 'Pytest', 'Testing', 'Selenium', 'Playwright', 'Vitest']);
+
+  for (const skill of skills) {
+    const lower = skill.toLowerCase();
+    if (langSet.has(skill)) result.languages.push(skill);
+    else if (backendSet.has(skill)) result.backend.push(skill);
+    else if (frontendSet.has(skill)) result.frontend.push(skill);
+    else if (dbSet.has(skill)) result.databases.push(skill);
+    else if (cloudSet.has(skill)) result.cloud.push(skill);
+    else if (devopsSet.has(skill)) result.devops.push(skill);
+    else if (frameworkSet.has(skill)) result.frameworks.push(skill);
+    else if (testingSet.has(skill)) result.testing.push(skill);
+    else result.other.push(skill);
+  }
+
+  return result;
+}
+
+interface CandidateProfile {
+  candidate: { name: string; email: string; phone: string; location: string };
+  education: Array<{ degree: string; university: string; graduation_year: string; cgpa?: string }>;
+  experience: Array<{ company: string; role: string; duration: string; responsibilities: string[]; technologies: string[]; domain?: string }>;
+  skills: { languages: string[]; backend: string[]; frontend: string[]; databases: string[]; cloud: string[]; devops: string[]; frameworks: string[]; testing: string[]; other: string[] };
+  projects: Array<{ name: string; description: string; technologies: string[]; candidate_contribution: string; technical_concepts: string[]; potential_interview_topics: string[] }>;
+  certifications: string[];
+  interview_topics: string[];
+  seniority_estimate: string;
+  resume_summary: string;
+  ambiguities_flagged?: string[];
+}
+
 export function generateHeuristicFallback<T = any>(
   agentSystemPrompt: string,
   userPrompt: string
 ): T {
   const isResumeAgent =
     agentSystemPrompt.includes('Resume Reading Agent') || userPrompt.includes('RESUME CONTENT');
+
+  if (isResumeAgent) {
+    const extracted = extractResumeInfo(userPrompt);
+    const skillCategories = categorizeSkills(extracted.skills);
+
+    const educationEntries = extracted.education.slice(0, 3).map((edu, i) => ({
+      degree: edu.includes('degree') ? edu.split('degree')[1]?.trim() || 'B.S. in Computer Science' : 'B.S. in Computer Science',
+      university: edu.includes('university') ? edu.split('university')[1]?.trim() || 'University' : 'University',
+      graduation_year: (edu.match(/\d{4}/)?.[0]) || '2023',
+      cgpa: '',
+    }));
+
+    const expEntries = extracted.experience.slice(0, 3).map((exp, i) => ({
+      company: exp.split(' at ')[1]?.split(' ')[0] || 'Company',
+      role: exp.includes('software engineer') ? 'Software Engineer' : exp.includes('developer') ? 'Developer' : 'Role',
+      duration: exp.match(/\d{4}\s*[-–]\s*\d{4}|\d{4}\s*[-–]\s*present/i)?.[0] || '2023 - Present',
+      responsibilities: [exp],
+      technologies: extracted.skills.slice(0, 5),
+      domain: 'Technology',
+    }));
+
+    const projectEntries = extracted.projects.slice(0, 2).map((proj, i) => ({
+      name: proj.replace(/^project[s]?[:]?\s*/i, '') || `Project ${i + 1}`,
+      description: proj,
+      technologies: extracted.skills.slice(0, 4),
+      candidate_contribution: 'Key contributor',
+      technical_concepts: extracted.skills.slice(0, 3),
+      potential_interview_topics: extracted.skills.slice(0, 3),
+    }));
+
+    const result: CandidateProfile = {
+      candidate: {
+        name: extracted.name || 'Candidate',
+        email: extracted.email || '',
+        phone: extracted.phone || '',
+        location: extracted.location || '',
+      },
+      education: educationEntries.length ? educationEntries : [{
+        degree: 'B.S. in Computer Science',
+        university: 'University',
+        graduation_year: '2023',
+        cgpa: '',
+      }],
+      experience: expEntries.length ? expEntries : [{
+        company: 'Company',
+        role: 'Software Engineer',
+        duration: '2023 - Present',
+        responsibilities: ['Developed and maintained software systems'],
+        technologies: extracted.skills.slice(0, 5),
+        domain: 'Technology',
+      }],
+      skills: skillCategories,
+      projects: projectEntries.length ? projectEntries : [{
+        name: 'Project',
+        description: 'Software project',
+        technologies: extracted.skills.slice(0, 4),
+        candidate_contribution: 'Key contributor',
+        technical_concepts: extracted.skills.slice(0, 3),
+        potential_interview_topics: extracted.skills.slice(0, 3),
+      }],
+      certifications: [],
+      interview_topics: extracted.skills.slice(0, 8),
+      seniority_estimate: 'Mid-level (2-4 years)',
+      resume_summary: `Candidate with experience in ${extracted.skills.slice(0, 5).join(', ') || 'software development'}.`,
+      ambiguities_flagged: ['Generated via heuristic fallback - may not reflect full resume details'],
+    };
+    return result as T;
+  }
+
   const isInterviewAgent =
     agentSystemPrompt.includes('Interview Agent') || userPrompt.includes('Generate Question');
   const isEvaluationAgent =
@@ -18,137 +214,6 @@ export function generateHeuristicFallback<T = any>(
     agentSystemPrompt.includes('Interview Report Agent') || userPrompt.includes('Interview Performance Report');
   const isPreparationAgent =
     agentSystemPrompt.includes('Preparation Plan Agent') || userPrompt.includes('Personalized Preparation Plan');
-
-  if (isResumeAgent) {
-    const lines = userPrompt.split('\n');
-    let name = 'Candidate';
-    let email = '';
-    let location = '';
-    for (const l of lines) {
-      if (l.includes('@')) {
-        const match = l.match(/[\w.-]+@[\w.-]+\.\w+/);
-        if (match) email = match[0];
-      }
-      if (l.toLowerCase().includes('location:') || l.includes('TX') || l.includes('CA') || l.includes('WA')) {
-        const parts = l.split(/[:|]/);
-        location = parts[parts.length - 1]?.trim() || '';
-      }
-      if (
-        !name ||
-        name === 'Candidate' &&
-        l.trim().length > 2 &&
-        l.trim().length < 40 &&
-        !l.includes('---') &&
-        !l.includes('Email') &&
-        !l.includes('Resume')
-      ) {
-        name = l.trim();
-      }
-    }
-
-    const hasJava = /java/i.test(userPrompt);
-    const hasSpring = /spring/i.test(userPrompt);
-    const hasReact = /react/i.test(userPrompt);
-    const hasNode = /node/i.test(userPrompt);
-    const hasPython = /python/i.test(userPrompt);
-    const hasSQL = /sql|mysql|postgres/i.test(userPrompt);
-    const hasDocker = /docker/i.test(userPrompt);
-    const hasAWS = /aws/i.test(userPrompt);
-
-    const languages: string[] = [];
-    if (hasJava) languages.push('Java 17');
-    if (hasPython) languages.push('Python');
-    if (hasReact || hasNode) languages.push('TypeScript', 'JavaScript');
-    if (hasSQL) languages.push('SQL');
-
-    const backend: string[] = [];
-    if (hasSpring) backend.push('Spring Boot', 'Spring Data JPA', 'Spring Security');
-    if (hasNode) backend.push('Node.js', 'Express');
-    if (hasPython) backend.push('FastAPI', 'AsyncIO');
-
-    const frontend: string[] = [];
-    if (hasReact) frontend.push('React', 'Tailwind CSS');
-
-    const databases: string[] = [];
-    if (/mysql/i.test(userPrompt)) databases.push('MySQL');
-    if (/postgres/i.test(userPrompt)) databases.push('PostgreSQL');
-    if (/redis/i.test(userPrompt)) databases.push('Redis');
-
-    const cloud: string[] = [];
-    if (hasAWS) cloud.push('AWS (EC2, S3, RDS)');
-    if (/gcp/i.test(userPrompt)) cloud.push('Google Cloud Platform');
-
-    const devops: string[] = [];
-    if (hasDocker) devops.push('Docker');
-    if (/kubernetes/i.test(userPrompt)) devops.push('Kubernetes');
-
-    const result: any = {
-      candidate: {
-        name: name || 'Alex Rivera',
-        email: email || 'candidate@example.com',
-        phone: '+1 (555) 432-8765',
-        location: location || 'Austin, TX',
-      },
-      education: [
-        {
-          degree: 'B.S. in Computer Science',
-          university: 'University of Texas at Austin',
-          graduation_year: '2023',
-          cgpa: '3.82 / 4.0',
-        },
-      ],
-      experience: [
-        {
-          company: 'Apex FinTech Solutions',
-          role: 'Software Engineer',
-          duration: '2023 - Present',
-          responsibilities: [
-            'Architected scalable backend microservices handling high concurrency',
-            'Engineered relational database models and optimized latency critical query paths',
-          ],
-          technologies: [...languages, ...backend].slice(0, 5),
-          domain: 'FinTech / High-Throughput Distributed Systems',
-        },
-      ],
-      skills: {
-        languages: languages.length ? languages : ['Java', 'SQL'],
-        backend: backend.length ? backend : ['Spring Boot', 'Spring Security'],
-        frontend,
-        databases: databases.length ? databases : ['MySQL', 'PostgreSQL'],
-        cloud: cloud.length ? cloud : ['AWS'],
-        devops: devops.length ? devops : ['Docker'],
-        frameworks: ['Hibernate', 'Flyway'],
-        testing: ['JUnit 5', 'Mockito'],
-        other: ['Microservices', 'REST APIs', 'JWT Authentication', 'ACID Transactions'],
-      },
-      projects: [
-        {
-          name: 'Employee Management & Security Gateway',
-          description: 'High performance service handling authenticated user sessions and data processing',
-          technologies: ['Spring Boot', 'MySQL', 'Docker', 'JWT'],
-          candidate_contribution: 'Designed authentication filters, token signing, and database indexing',
-          technical_concepts: ['JWT stateless auth', 'Database connection pooling', 'Filter chains'],
-          potential_interview_topics: [
-            'JWT vs Session auth',
-            'Spring Security Filter Chain',
-            'Database transaction isolation levels',
-          ],
-        },
-      ],
-      certifications: ['AWS Certified Solutions Architect'],
-      interview_topics: [
-        'Spring Boot & Microservices Architecture',
-        'Authentication & JWT Lifecycle',
-        'Database Optimization & ACID Transactions',
-        'Distributed Systems Resiliency',
-      ],
-      seniority_estimate: 'Mid-level (3-4 years)',
-      resume_summary:
-        'Demonstrates hands-on engineering experience in backend service design, relational data management, and containerized deployments with a strong foundation in modern architectures.',
-      ambiguities_flagged: [],
-    };
-    return result as T;
-  }
 
   if (isInterviewAgent) {
     // Detect question index
@@ -217,7 +282,6 @@ export function generateHeuristicFallback<T = any>(
 
   if (isEvaluationAgent) {
     const isShort = userPrompt.includes('EMPTY') || userPrompt.length < 150;
-    const answerExcerpt = userPrompt.slice(userPrompt.indexOf('Candidate\'s Answer:') + 20);
     const score = isShort ? 3.5 : 7.6;
 
     return {

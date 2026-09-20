@@ -338,7 +338,7 @@ class LLMClient {
           system: [{ text: strictJsonInstruction }],
           inferenceConfig: {
             temperature,
-            maxTokens: 3000,
+            maxTokens: 6000,
           },
         });
 

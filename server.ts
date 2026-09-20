@@ -1,4 +1,5 @@
 import express, { Request, Response } from 'express';
+import http from 'http';
 import path from 'path';
 import multer from 'multer';
 import mammoth from 'mammoth';
@@ -35,8 +36,49 @@ registerAllAgents();
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+  limits: { fileSize: 20 * 1024 * 1024 }, // 20MB limit
 });
+
+const MAX_RESUME_TEXT_CHARS = 200000;
+
+async function extractPdfText(buffer: Buffer): Promise<{ text: string; pageCount?: number }> {
+  const { PDFParse } = await import('pdf-parse');
+  const parser = new PDFParse({ data: buffer });
+
+  try {
+    const result = await parser.getText();
+    const pages = Array.isArray(result.pages) ? result.pages : [];
+    const pageText = pages
+      .map((page) => page.text?.trim())
+      .filter(Boolean)
+      .map((text, index) => `--- Page ${index + 1} ---\n${text}`)
+      .join('\n\n');
+
+    let extractedText = (pageText || result.text || '').trim();
+    
+    // Check if extraction yielded meaningful content
+    if (extractedText.length < 50) {
+      throw new Error('Extracted text too short - PDF may be scanned/image-based or corrupted');
+    }
+
+    return {
+      text: extractedText,
+      pageCount: result.total,
+    };
+  } catch (err: any) {
+    // Check for common PDF parsing errors
+    if (err.message?.includes('Invalid PDF') || err.message?.includes('Password')) {
+      throw new Error('PDF is password-protected, corrupted, or not a valid PDF file');
+    }
+    throw err;
+  } finally {
+    try {
+      await parser.destroy();
+    } catch {
+      // Ignore cleanup errors
+    }
+  }
+}
 
 async function startServer() {
   const app = express();
@@ -212,14 +254,17 @@ async function startServer() {
 
         if (mime === 'application/pdf' || fileName.toLowerCase().endsWith('.pdf')) {
           try {
-            // Dynamically import pdf-parse to be resilient
-            const pdfParseModule = await import('pdf-parse');
-            const pdf = (pdfParseModule as any).default || pdfParseModule;
-            const parsed = await pdf(buffer);
-            extractedText = parsed.text;
+            const parsed = await extractPdfText(buffer);
+            extractedText = parsed.pageCount
+              ? `[PDF pages extracted: ${parsed.pageCount}]\n\n${parsed.text}`
+              : parsed.text;
           } catch (pdfErr) {
-            console.error('PDF parsing error, falling back to text stream:', pdfErr);
-            extractedText = buffer.toString('utf-8');
+            console.error('PDF parsing error:', pdfErr);
+            res.status(400).json({
+              error:
+                'Could not extract readable text from this PDF. If it is scanned or image-only, please upload a text-based PDF, DOCX, or pasted text.',
+            });
+            return;
           }
         } else if (
           mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
@@ -237,7 +282,14 @@ async function startServer() {
 
       if (!extractedText || extractedText.trim().length < 20) {
         res.status(400).json({
-          error: 'Extracted text is too short or invalid. Please check the resume format.',
+          error:
+            'Extracted text is too short or invalid. If this is a scanned PDF, convert it with OCR or upload a text-based resume.',
+        });
+        return;
+      }
+      if (extractedText.length > MAX_RESUME_TEXT_CHARS) {
+        res.status(413).json({
+          error: `Extracted resume text exceeds limit of ${MAX_RESUME_TEXT_CHARS.toLocaleString()} characters`,
         });
         return;
       }
@@ -261,8 +313,10 @@ async function startServer() {
         res.status(400).json({ error: 'Valid resume_text is required (minimum 20 characters)' });
         return;
       }
-      if (resume_text.length > 50000) {
-        res.status(413).json({ error: 'Payload too large: resume_text exceeds limit of 50,000 characters' });
+      if (resume_text.length > MAX_RESUME_TEXT_CHARS) {
+        res.status(413).json({
+          error: `Payload too large: resume_text exceeds limit of ${MAX_RESUME_TEXT_CHARS.toLocaleString()} characters`,
+        });
         return;
       }
 
@@ -918,11 +972,19 @@ async function startServer() {
   // ==========================================
   // VITE DEV OR PRODUCTION STATIC SERVING
   // ==========================================
+  // NOTE: Vite runs in middlewareMode, so its HMR WebSocket server must be
+  // explicitly attached to the same underlying HTTP server. Previously
+  // `app.listen()` was used with `hmr: undefined`, leaving Vite's WS server
+  // orphaned and causing `WebSocket connection to 'ws://.../ ' failed` in the
+  // browser. We now create the HTTP server first and hand it to Vite.
+  const httpServer = http.createServer(app);
+
   if (process.env.NODE_ENV !== 'production') {
+    const hmrDisabled = process.env.DISABLE_HMR === 'true';
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
-        hmr: process.env.DISABLE_HMR === 'true' ? false : undefined,
+        hmr: hmrDisabled ? false : { server: httpServer },
       },
       appType: 'spa',
     });
@@ -930,12 +992,30 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get('*', (_req: Request, res: Response) => {
+    // `/*` (instead of `*`) keeps the SPA fallback working on both
+    // Express 4 and Express 5 (where `*` throws a PathError).
+    app.get('/*', (_req: Request, res: Response) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  // Prevent stray WebSocket upgrade errors from crashing the process.
+  httpServer.on('upgrade', (_req, socket) => {
+    // Vite HMR handles its own upgrades; destroy anything unhandled
+    // after a tick so a rogue client can't hang the socket forever.
+    const s = socket as any;
+    if (typeof s.setTimeout === 'function') {
+      s.setTimeout(5000, () => {
+        try {
+          s.destroy();
+        } catch {
+          // ignore
+        }
+      });
+    }
+  });
+
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`[AI Interview Coach] Server running at http://0.0.0.0:${PORT}`);
     console.log(`[Nasiko] Agent Orchestration layer active on port ${PORT}`);
   });

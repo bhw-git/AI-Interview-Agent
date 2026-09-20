@@ -104,15 +104,17 @@ Produce structured JSON adhering strictly to:
     );
 
     const generated = llmResponse.data;
+    const resolvedDifficulty =
+      (generated as any).difficulty || input.interview_config.difficulty || 'medium';
     const output: InterviewAgentOutput = {
       ...generated,
       question_id: generated.question_id || `Q${String(questionIndex).padStart(3, '0')}`,
-      difficulty: generated.difficulty || input.interview_config.difficulty || 'medium',
+      difficulty: resolvedDifficulty,
       interview_state: {
         current_question: questionIndex,
         total_questions: totalQuestions,
         topics_covered: [...topicsCovered, generated.topic].filter(Boolean),
-        difficulty_level: generated.difficulty,
+        difficulty_level: resolvedDifficulty,
         strengths_detected: Array.from(new Set(allStrengths)),
         weaknesses_detected: Array.from(new Set(allWeaknesses)),
       },

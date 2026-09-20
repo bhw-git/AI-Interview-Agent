@@ -18,9 +18,20 @@ export const NasikoTraceDrawer: React.FC<NasikoTraceDrawerProps> = ({ isOpen, on
       const res = await fetch('/api/observability/stats');
       if (res.ok) {
         const data = await res.json();
-        setStats(data);
-        if (data.recentTraces?.length > 0 && !selectedTrace) {
-          setSelectedTrace(data.recentTraces[0]);
+        // Normalize backend spans (startedAt/inputSummary) to drawer shape
+        // so traces render even if the API returns the raw contract.
+        const normalized = {
+          ...data,
+          recentTraces: (data.recentTraces || []).map((t: any) => ({
+            ...t,
+            timestamp: t.timestamp || t.completedAt || t.startedAt || new Date().toISOString(),
+            input: t.input ?? t.inputSummary ?? {},
+            output: t.output ?? t.outputSummary ?? {},
+          })),
+        };
+        setStats(normalized);
+        if (normalized.recentTraces?.length > 0 && !selectedTrace) {
+          setSelectedTrace(normalized.recentTraces[0]);
         }
       }
     } catch (err) {

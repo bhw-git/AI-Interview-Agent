@@ -52,11 +52,12 @@ class NasikoObservability {
 
   getDashboardStats() {
     const agents = Array.from(this.agentStats.values());
-    const totalTokens = this.spans.reduce((sum, s) => sum + s.tokens.totalTokens, 0);
+    // Defensive: older/corrupt spans may lack tokens — never crash the stats endpoint.
+    const totalTokens = this.spans.reduce((sum, s) => sum + (s.tokens?.totalTokens ?? 0), 0);
     const totalCalls = this.spans.length;
     const avgLatency =
       totalCalls > 0
-        ? Math.round(this.spans.reduce((sum, s) => sum + s.durationMs, 0) / totalCalls)
+        ? Math.round(this.spans.reduce((sum, s) => sum + (s.durationMs ?? 0), 0) / totalCalls)
         : 0;
 
     return {
@@ -67,7 +68,16 @@ class NasikoObservability {
         avgLatencyMs: avgLatency,
         activeAgentsCount: agents.filter((a) => a.healthy).length,
       },
-      recentTraces: this.spans.slice(0, 25),
+      // Map to a shape both the API contract (startedAt/inputSummary) and the
+      // legacy frontend (timestamp/input/output) understand.
+      recentTraces: this.spans.slice(0, 25).map((s: any) => ({
+        ...s,
+        timestamp: s.completedAt || s.startedAt,
+        input: s.inputSummary ?? s.input,
+        output: s.outputSummary ?? s.output,
+        inputSummary: s.inputSummary ?? s.input,
+        outputSummary: s.outputSummary ?? s.output,
+      })),
     };
   }
 

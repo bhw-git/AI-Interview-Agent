@@ -107,6 +107,14 @@ Respond with valid JSON matching:
     data.recommended_focus_areas = Array.isArray(data.recommended_focus_areas)
       ? data.recommended_focus_areas
       : [];
+    data.interview_summary =
+      typeof data.interview_summary === 'string' && data.interview_summary.trim().length > 0
+        ? data.interview_summary
+        : 'Interview completed. See detailed feedback for per-question analysis.';
+    data.detailed_feedback =
+      typeof data.detailed_feedback === 'string' && data.detailed_feedback.trim().length > 0
+        ? data.detailed_feedback
+        : data.interview_summary;
 
     return {
       data,

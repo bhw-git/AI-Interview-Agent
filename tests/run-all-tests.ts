@@ -11,6 +11,11 @@ import { validateReportAgentInput, validateReportAgentOutput } from '../server/a
 import { validatePreparationPlanInput, validatePreparationPlanOutput } from '../server/agents/preparation_agent/schema';
 import { Database } from '../server/db/database';
 import { nasikoOrchestrator } from '../server/nasiko/orchestrator';
+import { nasikoObservability } from '../server/nasiko/observability';
+import { nasikoClientBridge } from '../server/nasiko/clientBridge';
+import { llmClient } from '../server/llm/client';
+import { generateHeuristicFallback } from '../server/llm/heuristicFallback';
+import { anakinScraperClient } from '../server/scraper/anakinClient';
 import { registerAllAgents } from '../server/agents/index';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -178,15 +183,15 @@ export async function runFullQualitySuite() {
 
     const session = testDb.createSession({
       candidate_id: candidate.id,
-      role: 'Full Stack Engineer',
+      target_role: 'Full Stack Engineer',
       difficulty: 'medium',
       duration_minutes: 30,
       number_of_questions: 3,
       status: 'in_progress',
       current_question_index: 0,
-      skills_assessed: ['Node.js', 'PostgreSQL'],
     });
     assert(session.status === 'in_progress', 'Expected session in_progress');
+    assert(session.target_role === 'Full Stack Engineer', 'Expected target_role persisted (regression: role -> target_role)');
   });
 
   await runTest('3. Persistence & Idempotency', 'Answer submission is idempotent (updates existing instead of duplicating)', () => {
@@ -197,6 +202,7 @@ export async function runFullQualitySuite() {
       topic: 'Databases',
       category: 'Backend',
       difficulty: 'medium',
+      reason: 'Core database fundamentals probe',
       expected_concepts: ['B-Tree', 'Scan cost'],
       question_order: 1,
     });
@@ -383,6 +389,215 @@ Graduated Computer Science from UC Berkeley in 2019.`,
     assert(Array.isArray(res.data.study_plan), 'Expected study plan array');
     assert(res.data.study_plan.length > 0, 'Expected non-empty study plan');
     assert(res.data.study_plan[0].day > 0, 'Day must be positive integer');
+  });
+
+  // -------------------------------------------------------------
+  // SUITE 5: INPUT CONTRACTS & ADVERSARIAL PAYLOAD RESILIENCE
+  // -------------------------------------------------------------
+  await runTest('5. Input Contracts', 'Interview input validator rejects missing profile/role', () => {
+    assert(validateInterviewAgentInput({}).valid === false, 'Empty input must fail');
+    assert(
+      validateInterviewAgentInput({ candidate_profile: {}, interview_config: {} }).valid === false,
+      'Missing role must fail'
+    );
+    const valid = validateInterviewAgentInput({
+      candidate_profile: { candidate: { name: 'A' } },
+      interview_config: { role: 'Backend', difficulty: 'medium', duration_minutes: 20, number_of_questions: 5 },
+    });
+    assert(valid.valid === true, 'Complete interview input must pass');
+  });
+
+  await runTest('5. Input Contracts', 'Evaluation input validator requires question + answer', () => {
+    assert(validateEvaluationAgentInput({}).valid === false, 'Empty input must fail');
+    assert(
+      validateEvaluationAgentInput({ question: { question: 'Q?' }, candidate_answer: 123 as any }).valid ===
+        false,
+      'Non-string answer must fail'
+    );
+    const valid = validateEvaluationAgentInput({
+      question: { question_id: 'q1', question: 'What is ACID?', topic: 'DB', category: 'Backend', difficulty: 'medium' },
+      candidate_answer: 'Atomicity, Consistency, Isolation, Durability.',
+    });
+    assert(valid.valid === true, 'Valid evaluation input must pass');
+  });
+
+  await runTest('5. Input Contracts', 'Report input validator requires at least one evaluation', () => {
+    assert(validateReportAgentInput({ evaluations: [] }).valid === false, 'Empty evaluations must fail');
+    assert(validateReportAgentInput({}).valid === false, 'Missing evaluations must fail');
+    assert(
+      validateReportAgentInput({ evaluations: [{ question_id: 'q1' }] }).valid === true,
+      'Non-empty evaluations must pass'
+    );
+  });
+
+  await runTest('5. Input Contracts', 'Preparation input validator requires interview_report', () => {
+    assert(validatePreparationPlanInput({}).valid === false, 'Missing report must fail');
+    assert(
+      validatePreparationPlanInput({ interview_report: { overall_score: 7 } }).valid === true,
+      'Present report must pass'
+    );
+  });
+
+  await runTest('5. Input Contracts', 'Validators survive adversarial payloads without throwing', () => {
+    const xss = '<script>alert(1)</script>'.repeat(200);
+    const sql = "'; DROP TABLE candidates; --".repeat(50);
+    const long = 'a'.repeat(210000);
+    // Must not throw; may validly accept long text (server enforces 200k/15k limits separately)
+    for (const payload of [xss, sql, long]) {
+      const r1 = validateResumeAgentInput({ resume_text: payload });
+      assert(typeof r1.valid === 'boolean', 'Resume validator must return boolean for adversarial input');
+      const r2 = validateEvaluationAgentInput({
+        question: { question: 'Q?', topic: 'T', category: 'C', difficulty: 'medium' },
+        candidate_answer: payload.slice(0, 20000),
+      });
+      assert(typeof r2.valid === 'boolean', 'Evaluation validator must return boolean for adversarial input');
+    }
+    // Server-side guardrail thresholds (mirrors server.ts: resume 200k, answer 15k)
+    assert(long.length > 200000, 'Test payload exceeds resume limit');
+    assert('x'.repeat(15001).length > 15000, 'Test payload exceeds answer limit');
+  });
+
+  // -------------------------------------------------------------
+  // SUITE 6: LLM FALLBACK ENGINE & PROVIDER STATUS
+  // -------------------------------------------------------------
+  await runTest('6. LLM Resilience', 'Heuristic fallback synthesizes resume profile', () => {
+    const data = generateHeuristicFallback<any>(
+      'You are the Resume Reading Agent. Extract structured profile.',
+      'RESUME CONTENT\nAlice Smith\nalice@example.com\n5 years Node.js, PostgreSQL, AWS.'
+    );
+    const check = validateResumeAgentOutput(data);
+    assert(check.valid === true, `Fallback resume output must validate: ${check.error}`);
+    assert(typeof data.candidate.name === 'string' && data.candidate.name.length > 0, 'Name synthesized');
+  });
+
+  await runTest('6. LLM Resilience', 'Heuristic fallback generates interview question', () => {
+    const data = generateHeuristicFallback<any>(
+      'You are the Interview Agent. Generate Question.',
+      'Generate Question #2 of 5 for Senior Backend Engineer. RESUME: Node.js, Postgres.'
+    );
+    const check = validateInterviewAgentOutput(data);
+    assert(check.valid === true, `Fallback question must validate: ${check.error}`);
+    assert(String(data.question_id).startsWith('Q'), 'Question ID prefixed with Q');
+  });
+
+  await runTest('6. LLM Resilience', 'Heuristic fallback evaluation scores stay in [0,10]', () => {
+    const data = generateHeuristicFallback<any>(
+      'You are the Evaluation Agent. Evaluate the following candidate answer.',
+      'Evaluate the following candidate answer.\nQuestion: What is ACID?\nCandidate\'s Answer: Atomicity, Consistency, Isolation, Durability.'
+    );
+    const check = validateEvaluationAgentOutput({ ...data, feedback: data.feedback || 'ok' });
+    assert(check.valid === true, `Fallback evaluation must validate: ${check.error}`);
+    assert(data.scores.overall >= 0 && data.scores.overall <= 10, 'Overall in bounds');
+  });
+
+  await runTest('6. LLM Resilience', 'Provider status reports a known provider + region', () => {
+    const status = llmClient.getProviderStatus();
+    assert(
+      ['bedrock', 'gemini', 'openai', 'fallback'].includes(status.activeProvider),
+      'activeProvider must be known'
+    );
+    assert(typeof status.activeModel === 'string' && status.activeModel.length > 0, 'activeModel set');
+    assert(typeof status.bedrock.region === 'string', 'Bedrock region defaults (us-east-1)');
+  });
+
+  // -------------------------------------------------------------
+  // SUITE 7: SCRAPER, OBSERVABILITY & NASIKO BRIDGE
+  // -------------------------------------------------------------
+  await runTest('7. Infra Clients', 'Scraper status exposes fallback-ready mode without key', () => {
+    const status = anakinScraperClient.getStatus();
+    assert(['anakin_api', 'fallback_ready'].includes(status.mode), 'Mode must be known');
+    assert(Array.isArray(status.features) && status.features.length > 0, 'Features listed');
+    assert(typeof status.endpoint === 'string' && status.endpoint.startsWith('http'), 'Endpoint set');
+  });
+
+  await runTest('7. Infra Clients', 'Scraper rejects malformed URL without network call', async () => {
+    let threw = false;
+    try {
+      await anakinScraperClient.scrapeUrl('not-a-valid-url');
+    } catch (err: any) {
+      threw = true;
+      assert(String(err.message).toLowerCase().includes('invalid url'), 'Error mentions invalid URL');
+    }
+    assert(threw === true, 'Malformed URL must throw');
+  });
+
+  await runTest('7. Infra Clients', 'Observability dashboard never crashes and normalizes traces', () => {
+    const stats = nasikoObservability.getDashboardStats();
+    assert(Array.isArray(stats.agents) && stats.agents.length === 5, 'All 5 agents registered');
+    assert(typeof stats.summary.totalCalls === 'number', 'totalCalls numeric');
+    assert(typeof stats.summary.avgLatencyMs === 'number', 'avgLatencyMs numeric');
+    assert(Array.isArray(stats.recentTraces), 'recentTraces array');
+    for (const t of (stats.recentTraces as any[]).slice(0, 3)) {
+      assert(Boolean(t.timestamp || t.startedAt || t.completedAt), 'Trace has a timestamp field');
+      assert(t.input !== undefined || t.inputSummary !== undefined, 'Trace has input shape');
+    }
+  });
+
+  await runTest('7. Infra Clients', 'Nasiko bridge status exposes docker/embedded mode', () => {
+    const status = nasikoClientBridge.getStatus();
+    assert(['docker_nasiko', 'embedded_fallback'].includes(status.mode), 'Mode must be known');
+    assert(typeof status.targetUrl === 'string' && status.targetUrl.length > 0, 'targetUrl set');
+    assert(Array.isArray(status.registeredAgents) && status.registeredAgents.length === 5, '5 agents listed');
+  });
+
+  // -------------------------------------------------------------
+  // SUITE 8: DATABASE EDGE CASES (REPORT/PLAN REPLACEMENT, LOOKUPS)
+  // -------------------------------------------------------------
+  await runTest('8. DB Edge Cases', 'Report creation replaces existing report for same session', () => {
+    const base: any = {
+      session_id: 'sess_replace_1',
+      overall_score: 7,
+      technical_score: 7,
+      communication_score: 7,
+      problem_solving_score: 7,
+      category_scores: { Backend: 7 },
+      strengths: ['A'],
+      weaknesses: ['B'],
+      topics_to_improve: ['C'],
+      interview_summary: 'First',
+      detailed_feedback: 'First detail',
+      recommended_focus_areas: ['D'],
+    };
+    const r1 = testDb.createReport(base);
+    const r2 = testDb.createReport({ ...base, overall_score: 8.5, interview_summary: 'Second' });
+    const fetched = testDb.getReportBySessionId('sess_replace_1');
+    assert(fetched?.overall_score === 8.5, 'Latest report wins');
+    assert(fetched?.id === r2.id && r1.id !== r2.id, 'New report ID issued');
+  });
+
+  await runTest('8. DB Edge Cases', 'Plan creation replaces existing plan for same session', () => {
+    const base: any = {
+      session_id: 'sess_replace_1',
+      learning_priorities: ['P1'],
+      study_plan: [{ day: 1, topic: 'T', goals: ['g'], concepts: ['c'], practice_tasks: ['p'], estimated_minutes: 60 }],
+      practice_questions: ['Q?'],
+      coding_exercises: [],
+      revision_topics: ['R'],
+      recommended_next_interview: { suggested_role: 'Backend', focus_topics: [], target_difficulty: 'medium' },
+    };
+    testDb.createPlan(base);
+    testDb.createPlan({ ...base, learning_priorities: ['P2'] });
+    const fetched = testDb.getPlanBySessionId('sess_replace_1');
+    assert(fetched?.learning_priorities[0] === 'P2', 'Latest plan wins');
+  });
+
+  await runTest('8. DB Edge Cases', 'Question lookup works by id and question_id; unknown lookups are undefined', () => {
+    const qq = testDb.createQuestion({
+      session_id: 'sess_lookup_1',
+      question_id: 'Q099',
+      question: 'What is a closure?',
+      topic: 'JS',
+      category: 'Frontend',
+      difficulty: 'easy',
+      reason: 'Lookup regression probe',
+      expected_concepts: ['scope'],
+      question_order: 1,
+    });
+    assert(testDb.getQuestion(qq.id)?.question_id === 'Q099', 'Lookup by internal id works');
+    assert(testDb.getQuestion('Q099')?.id === qq.id, 'Lookup by question_id works');
+    assert(testDb.getEvaluation('nope', 'nope') === undefined, 'Unknown evaluation is undefined');
+    assert(testDb.getAnswer('nope', 'nope') === undefined, 'Unknown answer is undefined');
+    assert(testDb.getSession('nope') === undefined, 'Unknown session is undefined');
   });
 
   // -------------------------------------------------------------
