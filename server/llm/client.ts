@@ -82,6 +82,30 @@ class LLMClient {
     } catch { return false; }
   }
 
+  private extractCredentialsFromPreSignedUrl(url: string): { accessKeyId: string; sessionToken: string } | null {
+    try {
+      // Prepend https:// if missing
+      const fullUrl = url.startsWith('http') ? url : `https://${url}`;
+      const urlObj = new URL(fullUrl);
+      const params = new URLSearchParams(urlObj.search);
+      
+      // Extract from X-Amz-Credential (format: ACCESS_KEY/date/region/service/aws4_request)
+      const credential = params.get('X-Amz-Credential');
+      if (!credential) return null;
+      
+      const accessKeyId = credential.split('/')[0];
+      
+      // Extract session token
+      const sessionToken = params.get('X-Amz-Security-Token');
+      if (!sessionToken) return null;
+      
+      return { accessKeyId, sessionToken };
+    } catch (err) {
+      console.warn('[LLMClient] Failed to extract credentials from pre-signed URL:', err);
+      return null;
+    }
+  }
+
   private initBedrockClient() {
     const region = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || 'us-east-1';
     const bedrockApiKey = process.env.BEDROCK_API_KEY;
@@ -93,12 +117,31 @@ class LLMClient {
     this.preSignedUrl = '';
 
     try {
-      // Priority 1: Pre-signed URL (base64 encoded)
+      // Priority 1: Pre-signed URL (base64 encoded) - extract credentials for standard SDK client
       if (bedrockApiKey && bedrockApiKey.trim().length > 0 && this.isPreSignedUrl(bedrockApiKey)) {
         this.preSignedUrl = Buffer.from(bedrockApiKey, 'base64').toString('utf-8');
         this.usePreSignedUrl = true;
-        this.bedrockClient = null; // We'll use fetch directly
-        console.log(`[LLMClient] Amazon Bedrock initialized via pre-signed URL in region: ${region}`);
+        
+        // Extract credentials from pre-signed URL for standard Bedrock Runtime client
+        const creds = this.extractCredentialsFromPreSignedUrl(this.preSignedUrl);
+        if (creds) {
+          // Use session token as bearer token with standard Bedrock Runtime endpoint
+          this.bedrockClient = new BedrockRuntimeClient({
+            region,
+            maxAttempts: 1,
+            token: { token: creds.sessionToken },
+          });
+          console.log(`[LLMClient] Amazon Bedrock initialized via pre-signed URL session token in region: ${region}`);
+          return;
+        }
+        
+        // Fallback: try using full pre-signed URL as bearer token
+        this.bedrockClient = new BedrockRuntimeClient({
+          region,
+          maxAttempts: 1,
+          token: { token: bedrockApiKey.trim() },
+        });
+        console.log(`[LLMClient] Amazon Bedrock initialized via pre-signed URL as bearer token in region: ${region}`);
         return;
       }
 
@@ -216,8 +259,8 @@ class LLMClient {
   ): Promise<LLMResponse<T>> {
     const startTime = Date.now();
 
-    // 1. Pre-signed URL Bedrock (highest priority if configured)
-    if (this.usePreSignedUrl) {
+    // 1. Pre-signed URL Bedrock (highest priority if configured) - call directly via fetch
+    if (this.usePreSignedUrl && this.preSignedUrl) {
       try {
         return await this.callBedrockViaPreSignedUrl<T>(systemInstruction, prompt, temperature, startTime);
       } catch (err: any) {
@@ -333,7 +376,9 @@ class LLMClient {
       throw new Error('Pre-signed URL not available');
     }
 
-    // Amazon Nova format
+    // Prepend https:// if missing
+    const url = this.preSignedUrl.startsWith('http') ? this.preSignedUrl : `https://${this.preSignedUrl}`;
+
     const body = JSON.stringify({
       inferenceConfig: {
         maxTokens: 6000,
@@ -351,40 +396,54 @@ class LLMClient {
       ],
     });
 
-    const response = await fetch(this.preSignedUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body,
-    });
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Bedrock pre-signed URL error (${response.status}): ${errorText}`);
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Bedrock pre-signed URL error (${response.status}): ${errorText}`);
+      }
+
+      const data = await response.json();
+      let rawText = data.output?.message?.content?.[0]?.text 
+        || data.completion 
+        || data.output?.text 
+        || data.content 
+        || JSON.stringify(data);
+      const latencyMs = Date.now() - startTime;
+      const parsed = this.cleanAndParseJSON<T>(rawText);
+
+      const promptTokens = Math.ceil((systemInstruction.length + prompt.length) / 4);
+      const completionTokens = Math.ceil(rawText.length / 4);
+
+      console.log(`[LLMClient] Successfully executed via Bedrock pre-signed URL in ${latencyMs}ms`);
+
+      return {
+        data: parsed,
+        rawText,
+        latencyMs,
+        provider: 'bedrock',
+        model: 'pre-signed-url',
+        estimatedTokens: {
+          promptTokens,
+          completionTokens,
+          totalTokens: promptTokens + completionTokens,
+        },
+      };
+    } catch (fetchErr: any) {
+      // Enhanced error logging
+      console.warn('[LLMClient] Pre-signed URL fetch error details:', {
+        message: fetchErr.message,
+        code: fetchErr.code,
+        cause: fetchErr.cause?.message,
+        url: url.substring(0, 100) + '...',
+      });
+      throw fetchErr;
     }
-
-    const data = await response.json();
-    // Nova response format: { output: { message: { content: [{ text: "..." }] } } }
-    const rawText = data.output?.message?.content?.[0]?.text || '{}';
-    const latencyMs = Date.now() - startTime;
-    const parsed = this.cleanAndParseJSON<T>(rawText);
-
-    const promptTokens = Math.ceil((systemInstruction.length + prompt.length) / 4);
-    const completionTokens = Math.ceil(rawText.length / 4);
-
-    console.log(`[LLMClient] Successfully executed via Bedrock pre-signed URL in ${latencyMs}ms`);
-
-    return {
-      data: parsed,
-      rawText,
-      latencyMs,
-      provider: 'bedrock',
-      model: 'pre-signed-url',
-      estimatedTokens: {
-        promptTokens,
-        completionTokens,
-        totalTokens: promptTokens + completionTokens,
-      },
-    };
   }
 
   private async callBedrock<T>(

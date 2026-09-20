@@ -5,21 +5,21 @@
       "email": "test@candidate.com",
       "resume_text": "Sample software engineer resume",
       "candidate_profile": {},
-      "id": "cand_1789905027107_23ok6",
-      "created_at": "2026-09-20T11:50:27.107Z"
+      "id": "cand_1789906853815_mux8n",
+      "created_at": "2026-09-20T12:20:53.815Z"
     }
   ],
   "sessions": [
     {
-      "candidate_id": "cand_1789905027107_23ok6",
+      "candidate_id": "cand_1789906853815_mux8n",
       "target_role": "Full Stack Engineer",
       "difficulty": "medium",
       "duration_minutes": 30,
       "number_of_questions": 3,
       "status": "in_progress",
       "current_question_index": 0,
-      "id": "sess_1789905027109_ouprl",
-      "started_at": "2026-09-20T11:50:27.109Z"
+      "id": "sess_1789906853817_zkn2c",
+      "started_at": "2026-09-20T12:20:53.817Z"
     }
   ],
   "questions": [
@@ -36,8 +36,8 @@
         "Scan cost"
       ],
       "question_order": 1,
-      "id": "q_1789905027110_gjfhw",
-      "created_at": "2026-09-20T11:50:27.110Z"
+      "id": "q_1789906853818_l9ile",
+      "created_at": "2026-09-20T12:20:53.818Z"
     },
     {
       "session_id": "sess_lookup_1",
@@ -51,17 +51,17 @@
         "scope"
       ],
       "question_order": 1,
-      "id": "q_1789905027132_9rvm3",
-      "created_at": "2026-09-20T11:50:27.132Z"
+      "id": "q_1789906853838_eixdu",
+      "created_at": "2026-09-20T12:20:53.838Z"
     }
   ],
   "answers": [
     {
-      "question_id": "q_1789905027110_gjfhw",
+      "question_id": "q_1789906853818_l9ile",
       "session_id": "sess_test_1",
       "answer": "Indexes use B-trees to speed up lookup times.",
-      "id": "ans_1789905027111_2whn4",
-      "submitted_at": "2026-09-20T11:50:27.113Z"
+      "id": "ans_1789906853819_he9be",
+      "submitted_at": "2026-09-20T12:20:53.820Z"
     }
   ],
   "evaluations": [
@@ -86,8 +86,8 @@
       "missing_concepts": [],
       "incorrect_concepts": [],
       "recommended_followup_topics": [],
-      "id": "eval_1789905027114_xt33m",
-      "created_at": "2026-09-20T11:50:27.116Z"
+      "id": "eval_1789906853821_5u1sb",
+      "created_at": "2026-09-20T12:20:53.823Z"
     }
   ],
   "reports": [
@@ -114,8 +114,8 @@
       "recommended_focus_areas": [
         "D"
       ],
-      "id": "rep_1789905027126_8cfd7",
-      "created_at": "2026-09-20T11:50:27.127Z"
+      "id": "rep_1789906853834_s9ra2",
+      "created_at": "2026-09-20T12:20:53.834Z"
     }
   ],
   "plans": [
@@ -152,8 +152,8 @@
         "focus_topics": [],
         "target_difficulty": "medium"
       },
-      "id": "plan_1789905027130_vdpjp",
-      "created_at": "2026-09-20T11:50:27.130Z"
+      "id": "plan_1789906853837_g45by",
+      "created_at": "2026-09-20T12:20:53.837Z"
     }
   ]
 }
