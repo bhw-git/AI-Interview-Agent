@@ -252,12 +252,13 @@ async function startServer() {
         const mime = req.file.mimetype;
         const buffer = req.file.buffer;
 
-        if (mime === 'application/pdf' || fileName.toLowerCase().endsWith('.pdf')) {
+if (mime === 'application/pdf' || fileName.toLowerCase().endsWith('.pdf')) {
           try {
             const parsed = await extractPdfText(buffer);
             extractedText = parsed.pageCount
               ? `[PDF pages extracted: ${parsed.pageCount}]\n\n${parsed.text}`
               : parsed.text;
+            console.log(`[PDF Extract] ${fileName}: ${parsed.pageCount} pages, ${extractedText.length} chars extracted`);
           } catch (pdfErr) {
             console.error('PDF parsing error:', pdfErr);
             res.status(400).json({
@@ -305,7 +306,7 @@ async function startServer() {
     }
   });
 
-  // Agent 1: Analyze Resume with Nasiko ResumeReadingAgent
+// Agent 1: Analyze Resume with Nasiko ResumeReadingAgent
   app.post('/api/resume/analyze', async (req: Request, res: Response): Promise<void> => {
     try {
       const { resume_text, file_name } = req.body;
@@ -320,11 +321,15 @@ async function startServer() {
         return;
       }
 
+      console.log(`[Resume Analyze] ${file_name || 'unknown'}: ${resume_text.length} chars, provider: ${llmClient.getProviderStatus().activeProvider}`);
+
       // Execute via Nasiko
       const result = await nasikoOrchestrator.execute<
         { resume_text: string; file_name?: string },
         CandidateProfile
       >('resume_agent', { resume_text, file_name });
+
+      console.log(`[Resume Analyze] Completed in ${result.latencyMs}ms via ${result.llmLatencyMs ? 'LLM' : 'fallback'}, tokens: ${JSON.stringify(result.tokens)}`);
 
       // Persist Candidate to database
       const candidate = db.createCandidate({
